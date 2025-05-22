@@ -2,14 +2,63 @@ import sys
 import json
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QComboBox, QCheckBox, QPushButton, 
-                            QLabel, QGroupBox, QTextEdit)
+                            QLabel, QGroupBox, QTextEdit, QSpinBox, QDialog,
+                            QFormLayout, QDialogButtonBox)
 from PyQt6.QtCore import Qt
 import pyqtgraph as pg
 import numpy as np
+from audio_manager import AudioManager
+
+class SettingsDialog(QDialog):
+    def __init__(self, audio_manager, parent=None):
+        super().__init__(parent)
+        self.audio_manager = audio_manager
+        self.setWindowTitle("音频设置")
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QFormLayout()
+        
+        # 音频带宽设置
+        self.audio_bandwidth = QSpinBox()
+        self.audio_bandwidth.setRange(1000, 48000)
+        self.audio_bandwidth.setValue(self.audio_manager.audio_bandwidth)
+        layout.addRow("音频采集带宽 (Hz):", self.audio_bandwidth)
+        
+        # CW频率设置
+        self.cw_frequency = QSpinBox()
+        self.cw_frequency.setRange(300, 3000)
+        self.cw_frequency.setValue(self.audio_manager.cw_frequency)
+        layout.addRow("CW编码频率 (Hz):", self.cw_frequency)
+        
+        # CW带宽设置
+        self.cw_bandwidth = QSpinBox()
+        self.cw_bandwidth.setRange(50, 500)
+        self.cw_bandwidth.setValue(self.audio_manager.cw_bandwidth)
+        layout.addRow("CW模式截取带宽 (Hz):", self.cw_bandwidth)
+        
+        # 按钮
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+        
+        self.setLayout(layout)
+
+    def get_settings(self):
+        return {
+            'audio_bandwidth': self.audio_bandwidth.value(),
+            'cw_frequency': self.cw_frequency.value(),
+            'cw_bandwidth': self.cw_bandwidth.value()
+        }
 
 class AutoMorseMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.audio_manager = AudioManager()
         self.setWindowTitle("AutoMorse - CW自动收发系统")
         self.setGeometry(100, 100, 1200, 800)
         
@@ -54,6 +103,18 @@ class AutoMorseMainWindow(QMainWindow):
         # 监听音频复选框
         self.monitor_audio = QCheckBox("监听音频")
         audio_layout.addWidget(self.monitor_audio)
+        
+        # 测试音频按钮
+        test_layout = QHBoxLayout()
+        self.test_tone_btn = QPushButton("测试音频")
+        self.test_tone_btn.clicked.connect(self.toggle_test_tone)
+        test_layout.addWidget(self.test_tone_btn)
+        audio_layout.addLayout(test_layout)
+        
+        # 音频参数设置按钮
+        self.audio_settings_btn = QPushButton("音频参数设置")
+        self.audio_settings_btn.clicked.connect(self.show_audio_settings)
+        audio_layout.addWidget(self.audio_settings_btn)
         
         audio_group.setLayout(audio_layout)
         left_layout.addWidget(audio_group)
@@ -140,25 +201,126 @@ class AutoMorseMainWindow(QMainWindow):
         # 添加右侧面板到主布局
         layout.addWidget(right_panel, stretch=2)
         
+        # 初始化音频设备
+        self.init_audio_devices()
+        
         # 加载配置
         self.load_config()
         
+        # 连接信号
+        self.connect_signals()
+        
+    def init_audio_devices(self):
+        """初始化音频设备列表"""
+        input_devices, output_devices = self.audio_manager.get_audio_devices()
+        
+        # 清空并添加输入设备
+        self.input_device.clear()
+        for device in input_devices:
+            self.input_device.addItem(device['name'], device['index'])
+            
+        # 清空并添加输出设备
+        self.output_device.clear()
+        self.monitor_device.clear()
+        for device in output_devices:
+            self.output_device.addItem(device['name'], device['index'])
+            self.monitor_device.addItem(device['name'], device['index'])
+            
+    def connect_signals(self):
+        """连接信号和槽"""
+        self.input_device.currentIndexChanged.connect(self.on_input_device_changed)
+        self.output_device.currentIndexChanged.connect(self.on_output_device_changed)
+        self.monitor_device.currentIndexChanged.connect(self.on_monitor_device_changed)
+        self.monitor_audio.stateChanged.connect(self.on_monitor_audio_changed)
+        
+    def on_input_device_changed(self, index):
+        """输入设备改变时的处理"""
+        device_index = self.input_device.currentData()
+        self.audio_manager.set_input_device(device_index)
+        self.save_config()
+        
+    def on_output_device_changed(self, index):
+        """输出设备改变时的处理"""
+        device_index = self.output_device.currentData()
+        self.audio_manager.set_output_device(device_index)
+        self.save_config()
+        
+    def on_monitor_device_changed(self, index):
+        """监听设备改变时的处理"""
+        device_index = self.monitor_device.currentData()
+        self.audio_manager.set_monitor_device(device_index)
+        self.save_config()
+        
+    def on_monitor_audio_changed(self, state):
+        """监听音频状态改变时的处理"""
+        if state == Qt.CheckState.Checked.value:
+            # TODO: 实现音频监听功能
+            pass
+        else:
+            # TODO: 停止音频监听
+            pass
+            
+    def toggle_test_tone(self):
+        """切换测试音频的播放状态"""
+        if self.audio_manager.is_testing:
+            self.audio_manager.stop_test_tone()
+            self.test_tone_btn.setText("测试音频")
+        else:
+            self.audio_manager.play_test_tone(self.audio_manager.cw_frequency)
+            self.test_tone_btn.setText("停止测试")
+            
+    def show_audio_settings(self):
+        """显示音频参数设置对话框"""
+        dialog = SettingsDialog(self.audio_manager, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            settings = dialog.get_settings()
+            self.audio_manager.set_audio_bandwidth(settings['audio_bandwidth'])
+            self.audio_manager.set_cw_frequency(settings['cw_frequency'])
+            self.audio_manager.set_cw_bandwidth(settings['cw_bandwidth'])
+            self.save_config()
+        
     def load_config(self):
+        """加载配置"""
         try:
             with open('config.json', 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                # TODO: 加载配置到界面
+                self.audio_manager.load_settings(config)
+                
+                # 设置设备选择
+                if config.get('input_device') is not None:
+                    index = self.input_device.findData(config['input_device'])
+                    if index >= 0:
+                        self.input_device.setCurrentIndex(index)
+                        
+                if config.get('output_device') is not None:
+                    index = self.output_device.findData(config['output_device'])
+                    if index >= 0:
+                        self.output_device.setCurrentIndex(index)
+                        
+                if config.get('monitor_device') is not None:
+                    index = self.monitor_device.findData(config['monitor_device'])
+                    if index >= 0:
+                        self.monitor_device.setCurrentIndex(index)
+                        
+                self.monitor_audio.setChecked(config.get('monitor_audio', False))
+                self.auto_send_cb.setChecked(config.get('auto_send', False))
+                self.local_log_cb.setChecked(config.get('local_log', False))
+                self.remote_log_cb.setChecked(config.get('remote_log', False))
+                
         except FileNotFoundError:
             # 如果配置文件不存在，创建默认配置
             self.save_config()
     
     def save_config(self):
+        """保存配置"""
         config = {
-            'input_device': self.input_device.currentText(),
-            'output_device': self.output_device.currentText(),
-            'monitor_device': self.monitor_device.currentText(),
+            'input_device': self.audio_manager.input_device,
+            'output_device': self.audio_manager.output_device,
+            'monitor_device': self.audio_manager.monitor_device,
+            'audio_bandwidth': self.audio_manager.audio_bandwidth,
+            'cw_frequency': self.audio_manager.cw_frequency,
+            'cw_bandwidth': self.audio_manager.cw_bandwidth,
             'monitor_audio': self.monitor_audio.isChecked(),
-            'model': self.model_select.currentText(),
             'auto_send': self.auto_send_cb.isChecked(),
             'local_log': self.local_log_cb.isChecked(),
             'remote_log': self.remote_log_cb.isChecked()

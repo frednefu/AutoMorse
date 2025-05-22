@@ -1,9 +1,11 @@
 {
-    "input_device": "",
-    "output_device": "",
-    "monitor_device": "",
+    "input_device": 1,
+    "output_device": 5,
+    "monitor_device": 3,
+    "audio_bandwidth": 3000,
+    "cw_frequency": 500,
+    "cw_bandwidth": 150,
     "monitor_audio": false,
-    "model": "",
     "auto_send": false,
     "local_log": false,
     "remote_log": false
