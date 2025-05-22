@@ -1,0 +1,10 @@
+{
+    "input_device": "",
+    "output_device": "",
+    "monitor_device": "",
+    "monitor_audio": false,
+    "model": "",
+    "auto_send": false,
+    "local_log": false,
+    "remote_log": false
+}
