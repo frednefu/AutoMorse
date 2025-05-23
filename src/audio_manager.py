@@ -8,6 +8,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 class AudioManager(QObject):
     # 定义信号
     test_completed = pyqtSignal()  # 测试音频播放完成信号
+    send_completed = pyqtSignal()  # 发送音频播放完成信号
+    character_sent = pyqtSignal(str) # 新增：发送单个字符完成信号
     
     def __init__(self):
         super().__init__()  # 调用父类初始化
@@ -211,6 +213,7 @@ class AudioManager(QObject):
             if self.is_sending or self.is_testing:
                 return
             self.is_sending = True
+            # 将整个文本传递给发送循环，由循环按字符处理
             self.send_thread = threading.Thread(target=self._send_loop, args=(text, frequency, wpm))
             self.send_thread.start()
 
@@ -239,57 +242,86 @@ class AudioManager(QObject):
                 self.send_thread = None
 
     def _send_loop(self, text, frequency, wpm):
-        """发送CW报文循环"""
+        """发送CW报文循环，按字符发送"""
         try:
-            morse = self.morse_utils.text_to_morse(text)
-            audio = self.morse_utils.morse_to_audio(morse, frequency, wpm)
-
-            with self._lock:
-                if not self.is_sending:
-                    return
-                # 使用 output_device 播放CW报文
-                self.send_stream = sd.OutputStream(
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    device=self.output_device,
-                    dtype=np.float32,
-                    blocksize=1024
-                )
-                self.send_stream.start()
-
-            # 分块播放音频，以便及时响应停止信号
-            chunk_size = 1024 # 每次写入的音频帧数
-            for i in range(0, len(audio), chunk_size):
-                with self._lock:
-                    if not self.is_sending: # 检查停止信号
-                        print("发送CW：检测到停止信号，中断播放")  # 调试信息
-                        break
-                    chunk = audio[i:i + chunk_size]
-                    # 确保音频数据是二维的 (samples, channels)
-                    if chunk.ndim == 1:
-                        chunk = chunk.reshape(-1, 1)
-
-                    if self.send_stream is not None and self.send_stream.active:
-                        try:
-                            # 使用write方法，如果stream停止会抛异常
-                            self.send_stream.write(chunk)
-                        except Exception as e:
-                            print(f"发送CW写入流失败: {e}")
-                            break # 写入失败或停止信号
-                    else:
-                        print("发送CW：音频流非活动或不存在，中断播放")  # 调试信息
-                        break
-
-                # 在每次写入后检查停止信号
-                if not self.is_sending:
-                    print("发送CW：检测到停止信号，中断播放")  # 调试信息
+            for char in text:
+                if not self.is_sending: # 在发送每个字符前检查停止信号
+                    print("发送CW：检测到停止信号，中断发送")  # 调试信息
                     break
+
+                # 转换为摩尔斯码并生成音频
+                morse_code = self.morse_utils.text_to_morse(char) # 转换为单个字符的摩尔斯码
+                audio = self.morse_utils.morse_to_audio(morse_code, frequency, wpm) # 生成单个字符的音频
+
+                if len(audio) == 0: # 如果是无法转换的字符（如中文），跳过
+                     continue
+
+                # 创建音频流（如果不存在）
+                with self._lock:
+                    if not self.is_sending: # 再次检查停止信号
+                         break
+                    if self.send_stream is None or not self.send_stream.active:
+                         # 使用 output_device 播放CW报文
+                         print(f"创建发送音频流，使用设备: {self.output_device}") # 调试信息
+                         self.send_stream = sd.OutputStream(
+                             samplerate=self.sample_rate,
+                             channels=1,
+                             device=self.output_device,
+                             dtype=np.float32,
+                             blocksize=1024
+                         )
+                         self.send_stream.start()
+                         print("发送音频流已启动") # 调试信息
+
+                # 分块播放单个字符的音频
+                chunk_size = 1024 # 每次写入的音频帧数
+                audio_len = len(audio)
+                for i in range(0, audio_len, chunk_size):
+                    with self._lock:
+                        if not self.is_sending: # 在写入前检查停止信号
+                            print("发送CW：检测到停止信号，中断播放")  # 调试信息
+                            break
+                        chunk = audio[i:i + chunk_size]
+                        # 确保音频数据是二维的 (samples, channels)
+                        if chunk.ndim == 1:
+                            chunk = chunk.reshape(-1, 1)
+
+                        if self.send_stream is not None and self.send_stream.active:
+                            try:
+                                # 使用write方法，如果stream停止会抛异常
+                                self.send_stream.write(chunk)
+                            except Exception as e:
+                                print(f"发送CW写入流失败: {e}")
+                                break # 写入失败或停止信号
+                        else:
+                            print("发送CW：音频流非活动或不存在，中断播放")  # 调试信息
+                            break
+
+                    # 在每次写入后检查停止信号
+                    if not self.is_sending:
+                         print("发送CW：检测到停止信号，中断播放") # 调试信息
+                         break
+
+                # 等待单个字符的音频播放完成
+                if self.send_stream is not None and self.send_stream.active:
+                     try:
+                          self.send_stream.wait() # 等待当前字符音频播放完毕
+                          print(f"字符 '{char}' 音频播放完成") # 调试信息
+                     except Exception as e:
+                          print(f"等待字符音频播放完成失败: {e}") # 调试信息
+                          if not self.is_sending: # 如果是停止导致的异常，中断循环
+                               break
+
+                # 发送单个字符完成信号
+                if self.is_sending: # 只有在没有被停止的情况下才发送信号
+                     print(f"发出字符 '{char}' 发送完成信号") # 调试信息
+                     self.character_sent.emit(char)
 
         except Exception as e:
             print(f"发送CW音频播放循环错误: {e}")
         finally:
             with self._lock:
-                self.is_sending = False
+                self.is_sending = False # 发送循环结束，设置状态为False
                 if self.send_stream is not None:
                     try:
                         print("尝试停止发送音频流")  # 调试信息
@@ -300,6 +332,9 @@ class AudioManager(QObject):
                         print(f"关闭发送音频流失败: {e}")  # 调试信息
                     finally:
                         self.send_stream = None
+            # 发送完成信号
+            print("发出发送完成信号")  # 调试信息
+            self.send_completed.emit()
 
     def get_current_settings(self):
         """获取当前设置"""

@@ -4,10 +4,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QHBoxLayout, QComboBox, QCheckBox, QPushButton, 
                             QLabel, QGroupBox, QTextEdit, QSpinBox, QDialog,
                             QFormLayout, QDialogButtonBox, QLineEdit)
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
+from PyQt6.QtGui import QTextCursor
 import pyqtgraph as pg
 import numpy as np
 from audio_manager import AudioManager
+import PyQt6.QtGui
 
 class SettingsDialog(QDialog):
     def __init__(self, audio_manager, parent=None):
@@ -61,8 +63,24 @@ class AutoMorseMainWindow(QMainWindow):
         self.audio_manager = AudioManager()
         # 连接测试完成信号
         self.audio_manager.test_completed.connect(self.on_test_completed)
+        # 连接发送完成信号
+        self.audio_manager.send_completed.connect(self.on_send_completed)
+        # 连接发送单个字符完成信号
+        self.audio_manager.character_sent.connect(self.on_character_sent)
         self.setWindowTitle("AutoMorse - CW自动收发系统")
         self.setGeometry(100, 100, 1200, 800)
+        
+        # 创建用于自动发送的定时器
+        self.auto_send_timer = QTimer(self)
+        self.auto_send_timer.setInterval(300) # 设置延迟为300ms
+        self.auto_send_timer.setSingleShot(True) # 只触发一次
+        self.auto_send_timer.timeout.connect(self.trigger_auto_send)
+        
+        # 自动发送模式标志
+        self.is_auto_sending_active = False
+        
+        # 已发送的文本（用于自动发送时比较）
+        self.sent_text_content = ""
         
         # 创建主窗口部件
         main_widget = QWidget()
@@ -200,10 +218,10 @@ class AutoMorseMainWindow(QMainWindow):
         receive_layout.addWidget(self.receive_text)
         cw_layout.addLayout(receive_layout)
         
-        # 发送信息
+        # 发送信息 (待发送信息文本框)
         send_layout = QVBoxLayout()
         send_label_layout = QHBoxLayout()
-        send_label_layout.addWidget(QLabel("发送CW信息："))
+        send_label_layout.addWidget(QLabel("发送CW信息：")) # 这里的标签依然是"发送CW信息："
         self.send_speed_spin = QSpinBox()
         self.send_speed_spin.setRange(5, 60)
         self.send_speed_spin.setValue(26)
@@ -213,9 +231,24 @@ class AutoMorseMainWindow(QMainWindow):
         send_label_layout.addWidget(self.send_speed_spin)
         send_label_layout.addStretch()
         send_layout.addLayout(send_label_layout)
-        self.send_text = QTextEdit()
+        self.send_text = QTextEdit() # 这是待发送信息文本框
+        # 连接 textChanged 信号
+        self.send_text.textChanged.connect(self.on_send_text_changed)
         send_layout.addWidget(self.send_text)
+        # 将发送信息布局添加到主CW布局
         cw_layout.addLayout(send_layout)
+        
+        # 已发信息显示区域
+        sent_layout = QVBoxLayout()
+        sent_label = QLabel("已发信息：")
+        sent_layout.addWidget(sent_label)
+        self.sent_text = QTextEdit()
+        self.sent_text.setReadOnly(True) # 设置为只读
+        self.sent_text.setStyleSheet("color: red;") # 设置文字颜色为红色
+        self.sent_text.setFixedHeight(4 * self.sent_text.fontMetrics().lineSpacing()) # 设置显示高度为4行
+        sent_layout.addWidget(self.sent_text)
+        # 将已发信息布局添加到主CW布局
+        cw_layout.addLayout(sent_layout)
         
         # 控制按钮
         control_layout = QHBoxLayout()
@@ -402,30 +435,57 @@ class AutoMorseMainWindow(QMainWindow):
 
     def on_send_btn_clicked(self):
         """点击发送按钮，根据状态切换发送/停止"""
-        if not self.audio_manager.is_sending:
-            # 开始发送
+        print(f"on_send_btn_clicked: is_sending = {self.audio_manager.is_sending}, is_auto_sending_active = {self.is_auto_sending_active}") # 调试信息
+        
+        if not self.audio_manager.is_sending and not self.is_auto_sending_active:
+            # 如果当前不在发送状态且不在自动发送模式，则开始新的发送并进入自动发送模式
+            print("开始手动发送并进入自动发送模式") # 调试信息
+            self.is_auto_sending_active = True
+            self.update_send_button_state(True)
+            # 清空已发信息文本框
+            self.sent_text.clear()
+            self.sent_text_content = "" # 清空已发送文本记录
             text = self.send_text.toPlainText()
             wpm = self.send_speed_spin.value()
             freq = self.audio_manager.cw_frequency
+            # 直接调用send_cw，它会按字符发送并发出信号
             self.audio_manager.send_cw(text, freq, wpm)
-            self.update_send_button_state(True)
-        else:
-            # 停止发送
-            self.audio_manager.stop_sending_cw()
-            self.update_send_button_state(False)
+            
+        elif self.audio_manager.is_sending or self.is_auto_sending_active:
+             # 如果当前正在发送或在自动发送模式，则停止发送并退出自动发送模式
+             print("停止发送并退出自动发送模式") # 调试信息
+             self.is_auto_sending_active = False
+             self.auto_send_timer.stop() # 停止自动发送定时器
+             self.audio_manager.stop_sending_cw()
+             self.update_send_button_state(False) # 立即更新按钮状态为发送
 
     def update_send_button_state(self, is_sending):
         """更新发送按钮的状态和颜色"""
+        print(f"update_send_button_state: is_sending = {is_sending}") # 调试信息
         if is_sending:
             self.send_btn.setText("停止发送")
-            # 使用 setStyleSheet 设置背景色，通常会覆盖默认的hover样式
-            self.send_btn.setStyleSheet("background-color: red;")
+            # 设置按钮样式，包括hover状态
+            self.send_btn.setStyleSheet("""
+                QPushButton#send_btn {
+                    background-color: red !important;
+                    color: white !important;
+                }
+                QPushButton#send_btn:hover {
+                    background-color: red !important;
+                }
+            """)
+            self.send_btn.setEnabled(True) # 确保按钮是启用的
+            print("按钮已更新为停止发送状态") # 调试信息
         else:
             self.send_btn.setText("发送")
             self.send_btn.setStyleSheet("") # 恢复默认样式
+            self.send_btn.setEnabled(True) # 确保按钮是启用的
+            print("按钮已更新为发送状态") # 调试信息
+
         # 同时检查测试音频按钮的状态，避免两个按钮都是红色
         if not is_sending and not self.audio_manager.is_testing:
-             self.test_tone_btn.setStyleSheet("")
+            self.test_tone_btn.setStyleSheet("")
+            self.test_tone_btn.setEnabled(True) # 确保测试按钮也是启用的
 
     def update_test_button_state(self, is_testing):
         """更新测试音频按钮的状态和颜色"""
@@ -454,10 +514,100 @@ class AutoMorseMainWindow(QMainWindow):
             self.send_btn.setStyleSheet("")
             self.send_btn.setEnabled(True) # 确保发送按钮也是启用的
 
+    def on_send_completed(self):
+        """发送音频播放完成的处理函数"""
+        print("收到发送完成信号")  # 调试信息
+        print(f"on_send_completed: before check is_auto_sending_active={self.is_auto_sending_active}") # 新增调试信息
+        # 发送完成后，如果自动发送模式仍然开启，则等待新的文本输入触发自动发送
+        if self.is_auto_sending_active:
+            print("发送完成，自动发送模式开启，等待新的文本") # 调试信息
+        else:
+            # 如果自动发送模式已关闭（用户点击了停止按钮），则不做额外操作，按钮状态已更新
+            print("发送完成，自动发送模式已关闭") # 调试信息
+        print(f"on_send_completed: after check is_auto_sending_active={self.is_auto_sending_active}") # 新增调试信息
+
     def on_test_completed(self):
         """测试音频播放完成的处理函数"""
         print("收到测试完成信号")  # 调试信息
         self.update_test_button_state(False)
+
+    def on_send_text_changed(self):
+        """发送文本框内容改变时的处理"""
+        print("on_send_text_changed triggered") # 调试信息
+        try:
+            print("Getting cursor") # 调试信息
+            cursor = self.send_text.textCursor()
+            print("Moving cursor to end") # 调试信息
+            cursor.movePosition(PyQt6.QtGui.QTextCursor.MoveMode.End)
+            self.send_text.setTextCursor(cursor) # 立即设置光标位置
+            print("Getting plain text") # 调试信息
+            text = self.send_text.toPlainText()
+            print(f"Original text: {text}") # 调试信息
+            
+            print("Starting filtering loop") # 调试信息
+            filtered_chars = []
+            for c in text:
+                if c.isalnum() or c.isspace():
+                    filtered_chars.append(c.upper())
+            filtered_text = "".join(filtered_chars)
+            print("Filtering loop finished") # 调试信息
+            print(f"Filtered text: {filtered_text}") # 调试信息
+            
+            if filtered_text != text:
+                print("Text needs update") # 调试信息
+                self.send_text.blockSignals(True) # 阻止信号，避免无限循环
+                self.send_text.setText(filtered_text)
+                # 恢复光标位置
+                new_cursor = self.send_text.textCursor()
+                new_cursor.movePosition(PyQt6.QtGui.QTextCursor.MoveMode.End)
+                self.send_text.setTextCursor(new_cursor)
+                self.send_text.blockSignals(False)
+            else:
+                print("Text is already correct") # 调试信息
+            
+            # 如果自动发送模式开启且有新内容需要发送，则启动延迟发送
+            # 判断新内容：当前文本框内容长度 > 已发送文本记录长度
+            if self.is_auto_sending_active and len(filtered_text) > len(self.sent_text_content):
+                 print("文本改变，自动发送模式开启，有新内容，启动定时器") # 调试信息
+                 self.auto_send_timer.start() # 启动或重置定时器
+            elif not filtered_text.strip():
+                # 如果文本清空，停止定时器并退出自动发送模式（如果开启）
+                if self.is_auto_sending_active:
+                     print("文本清空，退出自动发送模式") # 调试信息
+                     self.is_auto_sending_active = False
+                     self.auto_send_timer.stop()
+                     if self.send_btn.text() == "停止发送":
+                          self.update_send_button_state(False)
+        except Exception as e:
+            print(f"Error in on_send_text_changed: {e}") # 捕获并打印异常
+
+    def trigger_auto_send(self):
+        """触发自动发送，发送新增的字符"""
+        print("触发自动发送") # 调试信息
+        # 只有在自动发送模式开启且当前没有发送时才进行自动发送
+        if self.is_auto_sending_active and not self.audio_manager.is_sending:
+             print("执行自动发送，查找新内容") # 调试信息
+             current_text = self.send_text.toPlainText()
+             # 找到需要发送的新字符
+             new_chars = current_text[len(self.sent_text_content):]
+
+             if new_chars:
+                  print(f"发送新字符: {new_chars}") # 调试信息
+                  wpm = self.send_speed_spin.value()
+                  freq = self.audio_manager.cw_frequency
+                  # 调用 send_cw 发送新字符，send_cw现在会处理按字符发送和信号
+                  self.audio_manager.send_cw(new_chars, freq, wpm)
+                  # send_cw 发送完毕后会发出 character_sent 信号，在on_character_sent中更新sent_text_content
+             else:
+                  print("没有新字符需要发送") # 调试信息
+        else:
+             print(f"不执行自动发送：is_auto_sending_active={self.is_auto_sending_active}, is_sending={self.audio_manager.is_sending}") # 调试信息
+
+    def on_character_sent(self, char):
+        """接收到单个字符发送完成信号，更新已发信息文本框"""
+        print(f"收到字符发送完成信号: {char}") # 调试信息
+        self.sent_text.append(char) # 在已发信息文本框中添加字符
+        self.sent_text_content += char # 更新已发送文本记录
 
 def main():
     app = QApplication(sys.argv)
