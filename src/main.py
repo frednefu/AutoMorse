@@ -3,8 +3,8 @@ import json
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QComboBox, QCheckBox, QPushButton, 
                             QLabel, QGroupBox, QTextEdit, QSpinBox, QDialog,
-                            QFormLayout, QDialogButtonBox)
-from PyQt6.QtCore import Qt
+                            QFormLayout, QDialogButtonBox, QLineEdit)
+from PyQt6.QtCore import Qt, QTimer
 import pyqtgraph as pg
 import numpy as np
 from audio_manager import AudioManager
@@ -59,6 +59,8 @@ class AutoMorseMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.audio_manager = AudioManager()
+        # 连接测试完成信号
+        self.audio_manager.test_completed.connect(self.on_test_completed)
         self.setWindowTitle("AutoMorse - CW自动收发系统")
         self.setGeometry(100, 100, 1200, 800)
         
@@ -74,6 +76,18 @@ class AutoMorseMainWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout()
         left_panel.setLayout(left_layout)
+        
+        # 常规设置组（移到最顶部，独立分组）
+        general_group = QGroupBox("常规设置")
+        general_layout = QFormLayout()
+        self.callsign_edit = QLineEdit()
+        self.callsign_edit.setPlaceholderText("请输入呼号")
+        general_layout.addRow(QLabel("呼号："), self.callsign_edit)
+        self.grid_edit = QLineEdit()
+        self.grid_edit.setPlaceholderText("请输入网格")
+        general_layout.addRow(QLabel("网格："), self.grid_edit)
+        general_group.setLayout(general_layout)
+        left_layout.addWidget(general_group)
         
         # 音频设置组
         audio_group = QGroupBox("音频设置")
@@ -165,7 +179,22 @@ class AutoMorseMainWindow(QMainWindow):
         
         # 接收信息
         receive_layout = QVBoxLayout()
-        receive_layout.addWidget(QLabel("接收CW信息："))
+        receive_label_layout = QHBoxLayout()
+        receive_label_layout.addWidget(QLabel("接收CW信息："))
+        self.receive_speed_spin = QSpinBox()
+        self.receive_speed_spin.setRange(5, 60)
+        self.receive_speed_spin.setValue(26)
+        self.receive_speed_spin.setSuffix(" WPM")
+        self.receive_speed_spin.setFixedWidth(100)
+        self.receive_speed_spin.setToolTip("接收CW报文速度")
+        self.receive_speed_spin.setEnabled(True)
+        self.receive_speed_auto_cb = QCheckBox("自动模式")
+        self.receive_speed_auto_cb.setChecked(True)
+        self.receive_speed_auto_cb.setToolTip("自动检测接收速度")
+        receive_label_layout.addWidget(self.receive_speed_spin)
+        receive_label_layout.addWidget(self.receive_speed_auto_cb)
+        receive_label_layout.addStretch()
+        receive_layout.addLayout(receive_label_layout)
         self.receive_text = QTextEdit()
         self.receive_text.setReadOnly(True)
         receive_layout.addWidget(self.receive_text)
@@ -173,7 +202,17 @@ class AutoMorseMainWindow(QMainWindow):
         
         # 发送信息
         send_layout = QVBoxLayout()
-        send_layout.addWidget(QLabel("发送CW信息："))
+        send_label_layout = QHBoxLayout()
+        send_label_layout.addWidget(QLabel("发送CW信息："))
+        self.send_speed_spin = QSpinBox()
+        self.send_speed_spin.setRange(5, 60)
+        self.send_speed_spin.setValue(26)
+        self.send_speed_spin.setSuffix(" WPM")
+        self.send_speed_spin.setFixedWidth(100)
+        self.send_speed_spin.setToolTip("发送CW报文速度")
+        send_label_layout.addWidget(self.send_speed_spin)
+        send_label_layout.addStretch()
+        send_layout.addLayout(send_label_layout)
         self.send_text = QTextEdit()
         send_layout.addWidget(self.send_text)
         cw_layout.addLayout(send_layout)
@@ -232,6 +271,11 @@ class AutoMorseMainWindow(QMainWindow):
         self.output_device.currentIndexChanged.connect(self.on_output_device_changed)
         self.monitor_device.currentIndexChanged.connect(self.on_monitor_device_changed)
         self.monitor_audio.stateChanged.connect(self.on_monitor_audio_changed)
+        self.receive_speed_auto_cb.stateChanged.connect(self.on_receive_speed_auto_changed)
+        self.send_btn.clicked.connect(self.on_send_btn_clicked)
+        self.callsign_edit.textChanged.connect(self.save_config)
+        self.grid_edit.textChanged.connect(self.save_config)
+        self.test_tone_btn.clicked.connect(self.toggle_test_tone)
         
     def on_input_device_changed(self, index):
         """输入设备改变时的处理"""
@@ -262,13 +306,24 @@ class AutoMorseMainWindow(QMainWindow):
             
     def toggle_test_tone(self):
         """切换测试音频的播放状态"""
-        if self.audio_manager.is_testing:
-            self.audio_manager.stop_test_tone()
-            self.test_tone_btn.setText("测试音频")
+        print(f"toggle_test_tone: is_testing = {self.audio_manager.is_testing}")  # 调试信息
+        if not self.audio_manager.is_testing:
+            # 开始测试
+            wpm = self.send_speed_spin.value() # 测试音频使用发送速度
+            freq = self.audio_manager.cw_frequency
+            print(f"开始测试音频: freq={freq}, wpm={wpm}")  # 调试信息
+            # 先更新按钮状态，再开始播放
+            self.update_test_button_state(True)
+            # 使用QTimer延迟调用play_test_tone，避免按钮状态更新和音频播放的竞争
+            QTimer.singleShot(50, lambda: self.audio_manager.play_test_tone(freq, wpm))
         else:
-            self.audio_manager.play_test_tone(self.audio_manager.cw_frequency)
-            self.test_tone_btn.setText("停止测试")
-            
+            # 停止测试
+            print("停止测试音频")  # 调试信息
+            # 先更新按钮状态，再停止播放
+            self.update_test_button_state(False)
+            # 使用QTimer延迟调用stop_test_tone，确保按钮状态已更新
+            QTimer.singleShot(50, self.audio_manager.stop_test_tone)
+
     def show_audio_settings(self):
         """显示音频参数设置对话框"""
         dialog = SettingsDialog(self.audio_manager, self)
@@ -285,28 +340,30 @@ class AutoMorseMainWindow(QMainWindow):
             with open('config.json', 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 self.audio_manager.load_settings(config)
-                
                 # 设置设备选择
                 if config.get('input_device') is not None:
                     index = self.input_device.findData(config['input_device'])
                     if index >= 0:
                         self.input_device.setCurrentIndex(index)
-                        
                 if config.get('output_device') is not None:
                     index = self.output_device.findData(config['output_device'])
                     if index >= 0:
                         self.output_device.setCurrentIndex(index)
-                        
                 if config.get('monitor_device') is not None:
                     index = self.monitor_device.findData(config['monitor_device'])
                     if index >= 0:
                         self.monitor_device.setCurrentIndex(index)
-                        
                 self.monitor_audio.setChecked(config.get('monitor_audio', False))
                 self.auto_send_cb.setChecked(config.get('auto_send', False))
                 self.local_log_cb.setChecked(config.get('local_log', False))
                 self.remote_log_cb.setChecked(config.get('remote_log', False))
-                
+                # 加载速度设置
+                self.receive_speed_spin.setValue(config.get('receive_cw_speed', 26))
+                self.receive_speed_auto_cb.setChecked(config.get('receive_cw_speed_auto', True))
+                self.send_speed_spin.setValue(config.get('send_cw_speed', 26))
+                # 加载常规设置
+                self.callsign_edit.setText(config.get('callsign', ''))
+                self.grid_edit.setText(config.get('grid', ''))
         except FileNotFoundError:
             # 如果配置文件不存在，创建默认配置
             self.save_config()
@@ -323,11 +380,84 @@ class AutoMorseMainWindow(QMainWindow):
             'monitor_audio': self.monitor_audio.isChecked(),
             'auto_send': self.auto_send_cb.isChecked(),
             'local_log': self.local_log_cb.isChecked(),
-            'remote_log': self.remote_log_cb.isChecked()
+            'remote_log': self.remote_log_cb.isChecked(),
+            # 新增速度设置
+            'receive_cw_speed': self.receive_speed_spin.value(),
+            'receive_cw_speed_auto': self.receive_speed_auto_cb.isChecked(),
+            'send_cw_speed': self.send_speed_spin.value(),
+            # 常规设置
+            'callsign': self.callsign_edit.text(),
+            'grid': self.grid_edit.text()
         }
         
         with open('config.json', 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
+
+    def on_receive_speed_auto_changed(self, state):
+        if state == Qt.CheckState.Checked.value:
+            self.receive_speed_spin.setEnabled(False)
+        else:
+            self.receive_speed_spin.setEnabled(True)
+        self.save_config()
+
+    def on_send_btn_clicked(self):
+        """点击发送按钮，根据状态切换发送/停止"""
+        if not self.audio_manager.is_sending:
+            # 开始发送
+            text = self.send_text.toPlainText()
+            wpm = self.send_speed_spin.value()
+            freq = self.audio_manager.cw_frequency
+            self.audio_manager.send_cw(text, freq, wpm)
+            self.update_send_button_state(True)
+        else:
+            # 停止发送
+            self.audio_manager.stop_sending_cw()
+            self.update_send_button_state(False)
+
+    def update_send_button_state(self, is_sending):
+        """更新发送按钮的状态和颜色"""
+        if is_sending:
+            self.send_btn.setText("停止发送")
+            # 使用 setStyleSheet 设置背景色，通常会覆盖默认的hover样式
+            self.send_btn.setStyleSheet("background-color: red;")
+        else:
+            self.send_btn.setText("发送")
+            self.send_btn.setStyleSheet("") # 恢复默认样式
+        # 同时检查测试音频按钮的状态，避免两个按钮都是红色
+        if not is_sending and not self.audio_manager.is_testing:
+             self.test_tone_btn.setStyleSheet("")
+
+    def update_test_button_state(self, is_testing):
+        """更新测试音频按钮的状态和颜色"""
+        print(f"update_test_button_state: is_testing = {is_testing}")  # 调试信息
+        if is_testing:
+            self.test_tone_btn.setText("停止测试")
+            # 设置按钮样式，包括hover状态，使用更具体的选择器和!important
+            self.test_tone_btn.setStyleSheet("""
+                QPushButton#test_tone_btn {
+                    background-color: red !important;
+                    color: white !important;
+                }
+                QPushButton#test_tone_btn:hover {
+                    background-color: red !important;
+                }
+            """)
+            self.test_tone_btn.setEnabled(True) # 确保按钮是启用的
+            print("按钮已更新为停止测试状态")  # 调试信息
+        else:
+            self.test_tone_btn.setText("测试音频")
+            self.test_tone_btn.setStyleSheet("") # 恢复默认样式
+            self.test_tone_btn.setEnabled(True) # 确保按钮是启用的
+            print("按钮已更新为测试音频状态")  # 调试信息
+        # 同时检查发送按钮的状态，避免两个按钮都是红色
+        if not is_testing and not self.audio_manager.is_sending:
+            self.send_btn.setStyleSheet("")
+            self.send_btn.setEnabled(True) # 确保发送按钮也是启用的
+
+    def on_test_completed(self):
+        """测试音频播放完成的处理函数"""
+        print("收到测试完成信号")  # 调试信息
+        self.update_test_button_state(False)
 
 def main():
     app = QApplication(sys.argv)

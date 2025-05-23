@@ -30,35 +30,39 @@ class MorseUtils:
                 morse.append(' ')
         return ' '.join(morse)
 
-    def morse_to_audio(self, morse, frequency):
-        """将摩尔斯码转换为音频信号"""
+    def wpm_to_durations(self, wpm):
+        # 国际摩尔斯码标准：1 WPM = 50单位/分钟 = 1.2s/字母 = 60/(50*wpm)秒/单位
+        unit = 60 / (50 * wpm)
+        dot = unit
+        dash = 3 * unit
+        space = unit
+        word_space = 7 * unit
+        return dot, dash, space, word_space
+
+    def morse_to_audio(self, morse, frequency, wpm=26):
+        """将摩尔斯码转换为音频信号，支持速度wpm"""
+        dot_duration, dash_duration, space_duration, word_space_duration = self.wpm_to_durations(wpm)
         audio = []
         for char in morse:
             if char == '.':
-                # 生成点的音频
-                dot_samples = int(self.dot_duration * self.sample_rate)
-                t = np.linspace(0, self.dot_duration, dot_samples, False, dtype=np.float32)
+                dot_samples = int(dot_duration * self.sample_rate)
+                t = np.linspace(0, dot_duration, dot_samples, False, dtype=np.float32)
                 audio.extend(np.sin(2 * np.pi * frequency * t, dtype=np.float32))
-                # 添加字符内间隔
-                space_samples = int(self.space_duration * self.sample_rate)
+                space_samples = int(space_duration * self.sample_rate)
                 audio.extend(np.zeros(space_samples, dtype=np.float32))
             elif char == '-':
-                # 生成划的音频
-                dash_samples = int(self.dash_duration * self.sample_rate)
-                t = np.linspace(0, self.dash_duration, dash_samples, False, dtype=np.float32)
+                dash_samples = int(dash_duration * self.sample_rate)
+                t = np.linspace(0, dash_duration, dash_samples, False, dtype=np.float32)
                 audio.extend(np.sin(2 * np.pi * frequency * t, dtype=np.float32))
-                # 添加字符内间隔
-                space_samples = int(self.space_duration * self.sample_rate)
+                space_samples = int(space_duration * self.sample_rate)
                 audio.extend(np.zeros(space_samples, dtype=np.float32))
             elif char == ' ':
-                # 添加词间隔
-                space_samples = int(self.word_space_duration * self.sample_rate)
+                space_samples = int(word_space_duration * self.sample_rate)
                 audio.extend(np.zeros(space_samples, dtype=np.float32))
-
         return np.array(audio, dtype=np.float32)
 
-    def generate_cq_audio(self, frequency):
-        """生成CQ CQ CQ的摩尔斯码音频"""
+    def generate_cq_audio(self, frequency, wpm=26):
+        """生成CQ CQ CQ的摩尔斯码音频，支持速度wpm"""
         text = "CQ CQ CQ"
         morse = self.text_to_morse(text)
-        return self.morse_to_audio(morse, frequency) 
+        return self.morse_to_audio(morse, frequency, wpm) 
